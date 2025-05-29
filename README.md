@@ -25,8 +25,7 @@ This Python script retrieves workload information from the Illumio Policy Comput
    ```bash
    pip install requests
 
-    Ensure you have valid PCE API credentials and the PCE server URL.
-
+Ensure you have valid PCE API credentials and the PCE server URL.
 Configuration
 Modify the following constants at the top of the script to match your PCE environment:
 

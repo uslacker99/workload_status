@@ -3,6 +3,7 @@
 import requests
 import json
 import time
+from datetime import datetime
 import os
 import sys, csv, asyncio
 import re
@@ -11,12 +12,17 @@ from collections import defaultdict
 from requests.auth import HTTPBasicAuth
 requests.packages.urllib3.disable_warnings()
 
-LOGIN = "api_1bf4ed8a2a537e"
-PASSWD = "173e70571d425fe5a4cd3a81b2f774d122ddfd777546f7750b0d0454"
+LOGIN = "api_199161eb"
+PASSWD = "75d182e0b42c0d8075"
 SERVER = "https://pce.shocknetwork.com:8443"
 ORG = "1"
-CSV_FILE = "/tmp/out.csv"
 
+# Get the current date and time
+current_time = datetime.now()
+# Format the datetime object into a string for the filename
+timestamp_string = current_time.strftime("%Y%m%d_%H%M")
+CSV_FILE = f'{timestamp_string}-workloads.csv'
+print(CSV_FILE)
 
 class APIError(Exception):
     """Custom exception for API errors."""
@@ -28,12 +34,10 @@ def getdata(api_url: str, auth_creds: HTTPBasicAuth, base_url: str) -> Any:
     """
     headers = {'Accept': 'application/json', 'Prefer': 'respond-async'}
     try:
-        # Ensure the initial API URL includes /api/v2 if it's not already there
         if not api_url.startswith(f"{base_url}/api/v2"):
             if not api_url.startswith(base_url):
                 api_url = f"{base_url}/api/v2{api_url}" if not api_url.startswith('/') else f"{base_url}/api/v2{api_url}"
             else:
-                # If it starts with base_url but doesn't have /api/v2, insert it
                 api_url = api_url.replace(base_url, f"{base_url}/api/v2", 1)
 
         r = requests.get(api_url, headers=headers, auth=auth_creds, verify=False)
@@ -43,11 +47,8 @@ def getdata(api_url: str, auth_creds: HTTPBasicAuth, base_url: str) -> Any:
             print('Waiting for the PCE to process the request')
             location_header = r.headers.get('Location')
             
-            # Properly construct the location URL
             if location_header:
-                # Ensure the location URL is absolute
                 if not location_header.startswith('http'):
-                    # Handle both cases where Location might start with /api/v2 or not
                     if location_header.startswith('/api/v2'):
                         location_url = f"{base_url}{location_header}"
                     else:
@@ -58,10 +59,10 @@ def getdata(api_url: str, auth_creds: HTTPBasicAuth, base_url: str) -> Any:
                 print(f"Debug: Checking job status at: {location_url}")
                 
                 wait_time = int(r.headers.get('Retry-After', 1))
-                time.sleep(1)
+                time.sleep(wait_time)  # Changed from time.sleep(1)
                 headers = {'Accept': 'application/json'}
                 retry = 0
-                max_retries = 5
+                max_retries = 50  # Changed from 5 to 50
                 
                 while retry < max_retries:
                     try:
@@ -72,7 +73,6 @@ def getdata(api_url: str, auth_creds: HTTPBasicAuth, base_url: str) -> Any:
                         if job_status.get('status') == 'done':
                             result_href = job_status.get('result', {}).get('href', '')
                             if result_href:
-                                # Ensure the result URL is properly constructed
                                 if result_href.startswith('/api/v2'):
                                     result_url = f"{base_url}{result_href}"
                                 else:
@@ -188,7 +188,6 @@ async def get_workloads() -> List[Dict[str, Any]]:
     base_url = SERVER
 
     while next_page_url:
-        # Construct full URL with proper /api/v2 prefix
         if not next_page_url.startswith('http'):
             if not next_page_url.startswith('/api/v2'):
                 next_page_url = f"/api/v2{next_page_url}" if not next_page_url.startswith('/') else f"/api/v2{next_page_url}"
@@ -234,6 +233,8 @@ async def fetch_and_display_workloads():
         state_counts = defaultdict(int)
         agent_status_counts = defaultdict(int)
         policy_sync_counts = defaultdict(int)
+        active_syncing_count = 0
+        offline_will_sync_count = 0
 
         # Prepare CSV file
         headers = [
@@ -280,7 +281,6 @@ async def fetch_and_display_workloads():
                     # Get managed_since timestamp
                     managed_since = wl.get('created_at', 'N/A')
                     if managed_since != 'N/A':
-                        # Convert timestamp to readable date
                         try:
                             managed_since = time.strftime('%Y-%m-%d', time.localtime(int(managed_since)))
                         except (ValueError, TypeError):
@@ -290,6 +290,14 @@ async def fetch_and_display_workloads():
                     state_counts[state] += 1
                     agent_status_counts[agent_status] += 1
                     policy_sync_counts[policy_sync] += 1
+
+                    # Count active/syncing workloads (only online, policy_sync == "syncing")
+                    if state != "offline" and policy_sync == "syncing":
+                        active_syncing_count += 1
+
+                    # Count offline workloads that will sync when online
+                    if state == "offline" and wl.get('managed', True) and agent_status != "uninstalled":
+                        offline_will_sync_count += 1
 
                     # Print to console
                     print(f"{hostname:<20} {ip:<15} {state:<12} {agent_status:<12} {policy_sync:<12} {mode:<12} {status:<12} {version:<10} {health_errors:<15} {managed_since:<15}")
@@ -318,6 +326,10 @@ async def fetch_and_display_workloads():
             writer.writerow(["Policy Sync", "Count"])
             for sync, count in sorted(policy_sync_counts.items()):
                 writer.writerow([sync, count])
+            writer.writerow([])
+            writer.writerow(["Additional Counts"])
+            writer.writerow(["Active Syncing", active_syncing_count])
+            writer.writerow(["Offline, Will Sync When Online", offline_will_sync_count])
 
         # Print summary to console
         print("\nSummary:")
@@ -331,6 +343,9 @@ async def fetch_and_display_workloads():
         print("\nPolicy Sync Counts:")
         for sync, count in sorted(policy_sync_counts.items()):
             print(f"{sync:<20}: {count}")
+        print("\nAdditional Counts:")
+        print(f"{'Active Syncing':<20}: {active_syncing_count}")
+        print(f"{'Offline, Will Sync When Online':<20}: {offline_will_sync_count}")
 
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
